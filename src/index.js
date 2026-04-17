@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import Tesseract from 'tesseract.js';
 import sharp from 'sharp';
 import { execFile } from 'child_process';
@@ -10,6 +11,12 @@ const require = createRequire(import.meta.url);
 const pdf = require('pdf-parse');
 
 const execFileAsync = promisify(execFile);
+
+// 获取临时目录路径（支持环境变量配置）
+function getTempDir(subdir = '') {
+  const baseDir = process.env.TEMP_DIR || process.env.TMPDIR || os.tmpdir();
+  return subdir ? path.join(baseDir, 'pdf-to-text', subdir) : path.join(baseDir, 'pdf-to-text');
+}
 
 // Tesseract worker 缓存
 const tesseractWorkers = new Map();
@@ -46,7 +53,7 @@ export async function pdfToText(input, options = {}) {
   } else if (Buffer.isBuffer(input)) {
     dataBuffer = input;
     if (ocr || autoDetect) {
-      const tempDir = path.join(process.cwd(), 'temp');
+      const tempDir = getTempDir();
       await fs.mkdir(tempDir, { recursive: true });
       filePath = path.join(tempDir, `temp_${Date.now()}.pdf`);
       await fs.writeFile(filePath, dataBuffer);
@@ -183,7 +190,7 @@ export async function pdfRegionToText(input, region = {}, options = {}) {
   if (typeof input === 'string') {
     filePath = path.resolve(input);
   } else if (Buffer.isBuffer(input)) {
-    const tempDir = path.join(process.cwd(), 'temp');
+    const tempDir = getTempDir();
     await fs.mkdir(tempDir, { recursive: true });
     filePath = path.join(tempDir, `region_${Date.now()}.pdf`);
     await fs.writeFile(filePath, input);
@@ -219,7 +226,7 @@ export async function pdfMultiRegionToText(input, regions = [], options = {}) {
   if (typeof input === 'string') {
     filePath = path.resolve(input);
   } else if (Buffer.isBuffer(input)) {
-    const tempDir = path.join(process.cwd(), 'temp');
+    const tempDir = getTempDir();
     await fs.mkdir(tempDir, { recursive: true });
     filePath = path.join(tempDir, `multi_region_${Date.now()}.pdf`);
     await fs.writeFile(filePath, input);
@@ -237,7 +244,7 @@ export async function pdfMultiRegionToText(input, regions = [], options = {}) {
   const totalPages = pdfInfo.pages;
 
   const worker = await getTesseractWorker(lang);
-  const tempDir = path.join(process.cwd(), 'temp', 'ocr');
+  const tempDir = getTempDir('ocr');
   await fs.mkdir(tempDir, { recursive: true });
 
   const pageResults = [];
@@ -348,7 +355,7 @@ export async function pdfMultiRegionToText(input, regions = [], options = {}) {
  * 保存 Buffer 到临时文件
  */
 async function saveBufferToTemp(buffer) {
-  const tempDir = path.join(process.cwd(), 'temp');
+  const tempDir = getTempDir();
   await fs.mkdir(tempDir, { recursive: true });
   const filePath = path.join(tempDir, `temp_${Date.now()}.pdf`);
   await fs.writeFile(filePath, buffer);
@@ -359,7 +366,7 @@ async function saveBufferToTemp(buffer) {
  * 从 PDF 各页提取指定区域的文本（使用 pdftoppm）
  */
 async function extractRegionFromPages(filePath, position, custom, lang) {
-  const tempDir = path.join(process.cwd(), 'temp', 'ocr');
+  const tempDir = getTempDir('ocr');
   await fs.mkdir(tempDir, { recursive: true });
 
   // 获取 PDF 页数
@@ -750,7 +757,7 @@ async function performOCR(filePath, lang = 'chi_sim+eng') {
   console.log(`PDF 共 ${totalPages} 页，开始 OCR 识别...`);
 
   const worker = await getTesseractWorker(lang);
-  const tempDir = path.join(process.cwd(), 'temp', 'ocr');
+  const tempDir = getTempDir('ocr');
   await fs.mkdir(tempDir, { recursive: true });
 
   const pageTexts = [];
