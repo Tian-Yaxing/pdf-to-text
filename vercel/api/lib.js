@@ -5,6 +5,41 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdf = pdfParse.default || pdfParse;
 
+// OCR.space API (免费，响应快，无需注册)
+const OCR_SPACE_API_KEY = process.env.OCR_API_KEY || 'helloworld'; // 免费测试 key
+
+/**
+ * 使用 OCR.space API 直接 OCR PDF
+ */
+export async function ocrPdf(pdfBuffer, lang = 'eng') {
+  const formData = new FormData();
+  formData.append('file', new Blob([pdfBuffer], { type: 'application/pdf' }), 'document.pdf');
+  formData.append('language', lang === 'chi_sim+eng' ? 'chseng' : lang === 'chi_sim' ? 'chs' : lang === 'chi_tra' ? 'cht' : 'eng');
+  formData.append('isOverlayRequired', 'false');
+  formData.append('OCREngine', '2'); // Engine 2 更快
+
+  try {
+    const response = await fetch('https://api.ocr.space/parse/image', {
+      method: 'POST',
+      headers: {
+        'apikey': OCR_SPACE_API_KEY
+      },
+      body: formData
+    });
+
+    const result = await response.json();
+
+    if (result.OCRExitCode === 1 && result.ParsedResults?.length > 0) {
+      return result.ParsedResults.map(p => p.ParsedText.trim()).join('\n\n');
+    }
+
+    throw new Error(result.ErrorMessage || 'OCR failed');
+  } catch (error) {
+    console.error('OCR.space error:', error);
+    throw error;
+  }
+}
+
 /**
  * Vercel 轻量版 PDF 转文本（无 OCR）
  * 只支持文本型 PDF，不支持扫描版

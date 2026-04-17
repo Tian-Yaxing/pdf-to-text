@@ -1,4 +1,4 @@
-import { pdfToTextLight, parseTableText } from './lib.js';
+import { pdfToTextLight, parseTableText, ocrPdf } from './lib.js';
 
 export default async function handler(req, res) {
   // CORS
@@ -27,7 +27,22 @@ export default async function handler(req, res) {
     }
 
     const splitPages = req.query.splitPages === 'true';
+    const useOcr = req.query.ocr === 'true';
+    const lang = req.query.lang || 'eng';
 
+    // 如果需要 OCR，使用第三方 API
+    if (useOcr) {
+      console.log('Using OCR.space API...');
+      const ocrText = await ocrPdf(buffer, lang);
+      return res.json({
+        success: true,
+        pages: 1,
+        text: ocrText,
+        metadata: { ocrUsed: true, provider: 'ocr.space' }
+      });
+    }
+
+    // 默认使用 PDF 原生文本提取
     const result = await pdfToTextLight(buffer, { splitPages });
 
     res.json({
