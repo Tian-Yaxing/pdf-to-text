@@ -1228,12 +1228,14 @@
             throw new Error("导出失败");
           }
 
-          // 下载文件
+          // 下载文件 - 使用原PDF文件名
           const blob = await response.blob();
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = `pdf_export_${Date.now()}.xlsx`;
+          // 从原始PDF文件名生成Excel文件名
+          const pdfName = selectedFile.name.replace('.pdf', '');
+          a.download = `excel_${pdfName}.xlsx`;
           document.body.appendChild(a);
           a.click();
           window.URL.revokeObjectURL(url);

@@ -635,71 +635,59 @@ function getPositionPercent(position) {
 /**
  * 解析表格文本为键值对（基于位置信息提取）
  * 使用PDF文本项的x/y坐标定位各字段值
+ * 当有多行数据时，只取最下面一行
  * @param {Array} textItems - PDF提取的文本项数组（含位置信息）
  * @returns {Array} - [{key: '管线号', value: '71-25-N7-UC4421-1A1N-N'}, ...]
  */
 function parseTableText(textItems) {
   if (!textItems || textItems.length === 0) return [];
 
-  // 字段配置：字段名 + x坐标范围（用于定位值）
-  // 基于PDF实际布局：
-  // - 底部表格数据行 y≈54
-  // - 比例/图号值在顶部区域 y≈31（表头在y≈37）
-  // - 右上角页码区域 y≈37，x≈1538-1594
-  const fieldConfigs = {
-    // 底部表格字段（y坐标约54）
-    '管线号': { minY: 50, maxY: 60, minX: 250, maxX: 450, pattern: /^71-\d+-N7-UC\d+-[A-Z0-9]+-N$/ },
-    '材料等级': { minY: 50, maxY: 60, minX: 480, maxX: 520 },
-    '管道级别': { minY: 50, maxY: 60, minX: 560, maxX: 600, pattern: /^GC\d$/ },
-    '设计温度': { minY: 50, maxY: 60, minX: 640, maxX: 680 },
-    '操作温度': { minY: 50, maxY: 60, minX: 720, maxX: 760 },
-    '设计压力': { minY: 50, maxY: 60, minX: 800, maxX: 860 },
-    '操作压力': { minY: 50, maxY: 60, minX: 880, maxX: 920 },
-    '保温类型': { minY: 50, maxY: 60, minX: 940, maxX: 1000 },
-    '保温厚度': { minY: 50, maxY: 60, minX: 1020, maxX: 1080 },
-    '刷漆': { minY: 50, maxY: 60, minX: 1100, maxX: 1160 },
-    // 顶部区域字段（比例和图号，值在y≈31，表头在y≈37）
-    '比例': { minY: 28, maxY: 35, minX: 1200, maxX: 1260, excludePatterns: ['SCALE', '比例', 'N/A'] },
-    '图号': { minY: 28, maxY: 35, minX: 1265, maxX: 1350, excludePatterns: ['DWG', '图号', 'N/A'] },
-    // 右上角项目号区域（英文编号如"21212-DD"）
-    '项目号': { minY: 90, maxY: 96, minX: 1580, maxX: 1610 }
-  };
-
-  // 移除版次字段（不需要）
-
-  const result = [];
-  const fields = ['管线号', '材料等级', '管道级别', '设计温度', '操作温度',
-                  '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
-
-  // 先找出底部数据行（包含管线号的行）
-  let dataLineY = null;
+  // 先找出所有包含管线号的行（多行数据情况）
+  const pipelineMatches = [];
   for (const item of textItems) {
-    if (item.str.match(/^71-\d+-N7-UC\d+-[A-Z0-9]+-N$/)) {
-      dataLineY = item.y;
-      break;
+    // 管线号格式：70-25-BS-47001-1A1B-C50 或类似
+    if (item.str.match(/^70-\d+-[A-Z]+-\d+-[A-Z0-9]+-[A-Z0-9]+$/)) {
+      pipelineMatches.push({ y: item.y, item });
     }
   }
 
-  if (!dataLineY) return [];
+  if (pipelineMatches.length === 0) return [];
 
-  // 根据实际数据行y坐标调整字段配置
-  const adjustedConfigs = {};
-  for (const [field, config] of Object.entries(fieldConfigs)) {
-    adjustedConfigs[field] = {
-      ...config,
-      minY: dataLineY - 5,
-      maxY: dataLineY + 5
-    };
-  }
+  // 取最下面一行（y值最小的，PDF坐标y从上到下递减）
+  const lowestMatch = pipelineMatches.reduce((min, curr) =>
+    curr.y < min.y ? curr : min
+  , pipelineMatches[0]);
 
-  // 比例、图号、页码保持顶部区域配置
-  adjustedConfigs['比例'] = fieldConfigs['比例'];
-  adjustedConfigs['图号'] = fieldConfigs['图号'];
-  adjustedConfigs['项目号'] = fieldConfigs['项目号'];
+  const dataLineY = lowestMatch.y;
+
+  // 字段配置：基于实际表格布局，使用相对位置定位
+  // 表格从左到右：尺寸、管线号、材料等级、管道级别、设计温度、操作温度、设计压力、操作压力、保温类型、保温厚度、刷漆
+  const fieldConfigs = {
+    '尺寸': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 80, maxX: 200 },
+    '管线号': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 250, maxX: 450, pattern: /^70-\d+-[A-Z]+-\d+-[A-Z0-9]+-[A-Z0-9]+$/ },
+    '材料等级': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 480, maxX: 520 },
+    '管道级别': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 560, maxX: 600 },
+    '设计温度': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 640, maxX: 700 },
+    '操作温度': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 720, maxX: 780 },
+    '设计压力': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 800, maxX: 860 },
+    '操作压力': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 880, maxX: 940 },
+    '保温类型': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 960, maxX: 1020 },
+    '保温厚度': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 1040, maxX: 1100 },
+    '刷漆': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 1120, maxX: 1200 },
+    // 顶部区域字段（比例和图号）
+    '比例': { minY: 28, maxY: 35, minX: 1200, maxX: 1260, excludePatterns: ['SCALE', '比例', 'N/A'] },
+    '图号': { minY: 28, maxY: 35, minX: 1265, maxX: 1350, excludePatterns: ['DWG', '图号', 'N/A'] },
+    // 右上角项目号区域
+    '项目号': { minY: 90, maxY: 96, minX: 1580, maxX: 1610 }
+  };
+
+  const result = [];
+  const fields = ['尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度',
+                  '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
 
   // 按字段提取值
   for (const field of fields) {
-    const config = adjustedConfigs[field];
+    const config = fieldConfigs[field];
     let value = '';
 
     // 找出符合位置条件的文本项
@@ -724,7 +712,7 @@ function parseTableText(textItems) {
           !config.excludePatterns.some(pattern => item.str.includes(pattern))
         );
         if (filteredItems.length > 0) {
-          // 对于图号，可能需要拼接多个文本项（如"PD-DW07-"和"21200")
+          // 对于图号，可能需要拼接多个文本项
           value = filteredItems.map(item => item.str.trim()).join('');
         }
       } else {
@@ -733,7 +721,7 @@ function parseTableText(textItems) {
       }
     }
 
-    // 过滤掉表头文本（如"材料等级"、"设计温度"等）
+    // 过滤掉表头文本
     if (fields.includes(value)) {
       value = '';
     }

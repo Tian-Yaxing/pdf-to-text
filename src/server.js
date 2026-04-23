@@ -183,7 +183,7 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
     const worksheet = workbook.addWorksheet('提取结果');
 
     // 实际图纸表格字段（底部表格 + 项目号）
-    const headers = ['序号', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
+    const headers = ['序号', '尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
     worksheet.columns = headers.map(h => ({ header: h, key: h, width: 15 }));
 
     // 设置表头样式
@@ -210,9 +210,11 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
       worksheet.addRow(rowData);
     });
 
-    // 设置响应头
+    // 设置响应头 - 使用原PDF文件名
+    const originalName = req.file.originalname.replace('.pdf', '');
+    const excelFileName = `excel_${originalName}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=bottom_table_export_${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(excelFileName)}"`);
 
     // 写入响应
     await workbook.xlsx.write(res);
@@ -332,9 +334,11 @@ app.post('/export/excel', upload.single('pdf'), async (req, res) => {
       });
     }
 
-    // 设置响应头
+    // 设置响应头 - 使用原PDF文件名
+    const originalName = req.file.originalname.replace('.pdf', '');
+    const excelFileName = `excel_${originalName}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=pdf_export_${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(excelFileName)}"`);
 
     // 写入响应
     await workbook.xlsx.write(res);
@@ -449,9 +453,11 @@ app.post('/export/multi-excel', upload.single('pdf'), async (req, res) => {
       worksheet.addRow(rowData);
     });
 
-    // 设置响应头
+    // 设置响应头 - 使用原PDF文件名
+    const originalName = req.file.originalname.replace('.pdf', '');
+    const excelFileName = `excel_${originalName}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=multi_region_export_${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(excelFileName)}"`);
 
     // 写入响应
     await workbook.xlsx.write(res);
