@@ -512,14 +512,18 @@ function calculateCropRegion(position, custom, imageWidth, imageHeight, margin =
   const regionHeight = Math.round(effectiveHeight * defaultHeightPercent / 100);
 
   switch (position) {
-    case 'top-right':
+    case 'top-right': {
+      // 右上角区域，扩大到40%宽、55%高，以包含更多内容
+      const topRightWidth = Math.round(effectiveWidth * 40 / 100);
+      const topRightHeight = Math.round(effectiveHeight * 55 / 100);
       return {
-        left: effectiveRight - regionWidth,
+        left: effectiveRight - topRightWidth,
         top: effectiveTop,
-        width: regionWidth,
-        height: regionHeight
+        width: topRightWidth,
+        height: topRightHeight
       };
-    case 'top-right-small':
+    }
+    case 'top-right-small': {
       // 右上角小区域，仅提取图纸编号（英文项目号）
       // 定位到项目号区域：右侧15-25%，顶部5-8%（对应"21212-DD"位置）
       const smallWidth = Math.round(effectiveWidth * 10 / 100);
@@ -530,6 +534,7 @@ function calculateCropRegion(position, custom, imageWidth, imageHeight, margin =
         width: smallWidth,
         height: smallHeight
       };
+    }
     case 'top-left':
       return {
         left: effectiveLeft,
@@ -558,7 +563,7 @@ function calculateCropRegion(position, custom, imageWidth, imageHeight, margin =
         width: regionWidth,
         height: regionHeight
       };
-    case 'bottom-center':
+    case 'bottom-center': {
       // 底部居中，宽度更大（70%），高度10%，紧贴底部，底部不截取边距
       const bottomMargin = { top: 3, bottom: 0, left: 3, right: 3 };
       const bcEffectiveLeft = Math.round(imageWidth * (bottomMargin.left || 0) / 100);
@@ -576,7 +581,8 @@ function calculateCropRegion(position, custom, imageWidth, imageHeight, margin =
         width: bottomCenterWidth,
         height: bottomCenterHeight
       };
-    case 'bottom-table':
+    }
+    case 'bottom-table': {
       // 底部表格区域，提取完整表格区域（包含值行+表头行）
       const tableMargin = { top: 3, bottom: 0, left: 3, right: 3 };
       const tableEffectiveLeft = Math.round(imageWidth * (tableMargin.left || 0) / 100);
@@ -595,6 +601,7 @@ function calculateCropRegion(position, custom, imageWidth, imageHeight, margin =
         width: tableWidth,
         height: tableHeight
       };
+    }
     default:
       return {
         left: effectiveRight - regionWidth,
@@ -637,34 +644,72 @@ function getPositionPercent(position) {
  * 使用PDF文本项的x/y坐标定位各字段值
  * 当有多行数据时，只取最下面一行
  * @param {Array} textItems - PDF提取的文本项数组（含位置信息）
- * @returns {Array} - [{key: '管线号', value: '71-25-N7-UC4421-1A1N-N'}, ...]
+ * @returns {Object} - {tableData: [...], materialsList: [...]}
  */
 function parseTableText(textItems) {
-  if (!textItems || textItems.length === 0) return [];
+  if (!textItems || textItems.length === 0) return { tableData: [], materialsList: [] };
 
   // 先找出所有包含管线号的行（多行数据情况）
   const pipelineMatches = [];
   for (const item of textItems) {
-    // 管线号格式：70-25-BS-47001-1A1B-C50 或类似
-    if (item.str.match(/^70-\d+-[A-Z]+-\d+-[A-Z0-9]+-[A-Z0-9]+$/)) {
+    // 管线号格式匹配多种变体：
+    // 格式1: 70-40-SM-40004-2M0B-C40
+    // 格式2: 70-250-S4-40001-AA7B-H110
+    // 格式3: 70-40-S4-LSM4006CV-AA7B-H70
+    // 特征：以70-开头，包含多个段，用-分隔
+    if (item.str.match(/^70-\d+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+$/) ||
+        item.str.match(/^70-\d+-[A-Z]+\d+-\d+-[A-Z0-9]+-[A-Z0-9]+$/)) {
       pipelineMatches.push({ y: item.y, item });
     }
   }
 
-  if (pipelineMatches.length === 0) return [];
+  const result = { tableData: [], materialsList: [] };
 
-  // 取最下面一行（y值最小的，PDF坐标y从上到下递减）
-  const lowestMatch = pipelineMatches.reduce((min, curr) =>
-    curr.y < min.y ? curr : min
-  , pipelineMatches[0]);
+  if (pipelineMatches.length === 0) {
+    // 如果没有管线号，仍然提取材料清单
+    result.materialsList = parseMaterialsList(textItems);
+    return result;
+  }
 
-  const dataLineY = lowestMatch.y;
+  // 对于每行管线号，找出对应的尺寸值，然后取尺寸最大的那一行
+  let maxSizeRow = null;
+  let maxSize = -1;
+
+  for (const match of pipelineMatches) {
+    const rowY = match.y;
+    // 找该行的尺寸值（x约80-200）
+    const sizeItem = textItems.find(i =>
+      i.y >= rowY - 5 && i.y <= rowY + 5 &&
+      i.x >= 80 && i.x <= 200 &&
+      i.str.match(/^\d+$/)
+    );
+    if (sizeItem) {
+      const size = parseInt(sizeItem.str);
+      if (size > maxSize) {
+        maxSize = size;
+        maxSizeRow = { y: rowY, match };
+      }
+    }
+  }
+
+  // 如果没找到尺寸，取第一行管线号
+  if (!maxSizeRow) {
+    maxSizeRow = { y: pipelineMatches[0].y, match: pipelineMatches[0] };
+  }
+
+  const dataLineY = maxSizeRow.y;
 
   // 字段配置：基于实际表格布局，使用相对位置定位
   // 表格从左到右：尺寸、管线号、材料等级、管道级别、设计温度、操作温度、设计压力、操作压力、保温类型、保温厚度、刷漆
+  // 管线号pattern匹配多种格式：
+  // 格式1: 70-40-SM-40004-2M0B-C40
+  // 格式2: 70-250-S4-40001-AA7B-H110
+  // 格式3: 70-40-S4-LSM4006CV-AA7B-H70
+  const pipelinePattern = /^70-\d+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+$/;
+
   const fieldConfigs = {
     '尺寸': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 80, maxX: 200 },
-    '管线号': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 250, maxX: 450, pattern: /^70-\d+-[A-Z]+-\d+-[A-Z0-9]+-[A-Z0-9]+$/ },
+    '管线号': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 230, maxX: 500, pattern: pipelinePattern },
     '材料等级': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 480, maxX: 520 },
     '管道级别': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 560, maxX: 600 },
     '设计温度': { minY: dataLineY - 5, maxY: dataLineY + 5, minX: 640, maxX: 700 },
@@ -681,7 +726,6 @@ function parseTableText(textItems) {
     '项目号': { minY: 90, maxY: 96, minX: 1580, maxX: 1610 }
   };
 
-  const result = [];
   const fields = ['尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度',
                   '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
 
@@ -726,13 +770,108 @@ function parseTableText(textItems) {
       value = '';
     }
 
-    result.push({
+    result.tableData.push({
       key: field,
       value: value
     });
   }
 
+  // 提取材料清单（右上角区域）
+  result.materialsList = parseMaterialsList(textItems);
+
   return result;
+}
+
+/**
+ * 提取材料清单数据（右上角区域）
+ * MATERIALS LIST 表格包含：NO, NPD, CODE, QTY, DESCRIPTION
+ * @param {Array} textItems - PDF提取的文本项数组
+ * @returns {Array} - [{NO: 1, NPD: '50', CODE: '80388569', QTY: '8.3 M', DESCRIPTION: 'Pipe,...'}, ...]
+ */
+function parseMaterialsList(textItems) {
+  if (!textItems || textItems.length === 0) return [];
+
+  // 材料清单区域定位（右上角，基于实际PDF布局）
+  // 表头行 y ≈ 1131，数据行 y ≈ 1066-1109
+  // NPD x ≈ 1212, CODE x ≈ 1266, QTY x ≈ 1332, DESCRIPTION x ≈ 1383
+
+  // 找出材料清单区域的表头位置
+  const npdHeader = textItems.find(i => i.str === 'NPD' && i.x > 1200);
+  const codeHeader = textItems.find(i => i.str === 'CODE' && i.x > 1200);
+  const qtyHeader = textItems.find(i => i.str === 'QTY' && i.x > 1200);
+  const descHeader = textItems.find(i => i.str === 'DESCRIPTION' && i.x > 1400);
+
+  if (!npdHeader || !codeHeader || !qtyHeader || !descHeader) {
+    return [];
+  }
+
+  const headerY = npdHeader.y;
+  const minX = 1200;
+  const maxX = 1600;
+
+  // 找出数据行（y值小于表头，且在材料清单区域内）
+  const dataItems = textItems.filter(item => {
+    return item.y < headerY && item.y > headerY - 80 && item.x >= minX && item.x <= maxX;
+  });
+
+  // 按y值分组（每行数据），使用容差范围处理微小差异
+  const yGroups = {};
+  for (const item of dataItems) {
+    // 找到最近的已有分组键（容差±2）
+    let foundKey = null;
+    for (const existingKey of Object.keys(yGroups)) {
+      if (Math.abs(parseFloat(existingKey) - item.y) <= 2) {
+        foundKey = existingKey;
+        break;
+      }
+    }
+    if (foundKey) {
+      yGroups[foundKey].push(item);
+    } else {
+      const yKey = item.y.toFixed(1);
+      if (!yGroups[yKey]) yGroups[yKey] = [];
+      yGroups[yKey].push(item);
+    }
+  }
+
+  // 按y值降序排列（从上到下）
+  const sortedYKeys = Object.keys(yGroups).sort((a, b) => b - a);
+
+  const materialsList = [];
+  let rowNo = 1;
+
+  for (const yKey of sortedYKeys) {
+    const rowItems = yGroups[yKey];
+
+    // 检查是否为数据行（需要有NPD值）
+    const npdItem = rowItems.find(i => i.x >= npdHeader.x - 10 && i.x <= npdHeader.x + 50);
+    if (!npdItem || npdItem.str.match(/^[A-Z]+$/) || npdItem.str === 'NPD') continue;
+
+    const row = { NO: rowNo };
+
+    // NPD (公称直径) - 数据x约1212，表头x约1216
+    row['NPD公称直径'] = npdItem.str.trim();
+
+    // CODE - 数据x约1266，表头x约1273
+    const codeItem = rowItems.find(i => i.x >= 1255 && i.x <= 1285);
+    row['CODE'] = codeItem ? codeItem.str.trim() : '';
+
+    // QTY - 数据x约1332，表头x约1342
+    const qtyItem = rowItems.find(i => i.x >= 1320 && i.x <= 1350);
+    row['QTY'] = qtyItem ? qtyItem.str.trim() : '';
+
+    // DESCRIPTION - 数据x约1383，表头x约1473，取右侧所有文本
+    const descItems = rowItems.filter(i => i.x >= 1380);
+    row['DESCRIPTION备注'] = descItems.map(i => i.str.trim()).join('');
+
+    // 过滤空行
+    if (row['NPD公称直径'] || row['CODE'] || row['DESCRIPTION备注']) {
+      materialsList.push(row);
+      rowNo++;
+    }
+  }
+
+  return materialsList;
 }
 
 /**

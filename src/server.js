@@ -118,7 +118,8 @@ app.post('/convert/bottom-table', upload.single('pdf'), async (req, res) => {
       pageTables.push({
         page: i + 1,
         rawText: pageText.substring(0, 500), // 仅保留前500字符作为参考
-        tableData: parsedData
+        tableData: parsedData.tableData || [],
+        materialsList: parsedData.materialsList || []
       });
     }
 
@@ -151,14 +152,14 @@ function splitTextToPages(text, totalPages) {
   return pages;
 }
 
-// 底部表格导出 Excel API（合并右上角编号提取）
+// 底部表格导出 Excel API（合并右上角编号提取 + 材料清单）
 app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: '请上传 PDF 文件' });
     }
 
-    // 提取底部表格数据（使用位置解析，同时包含右上角编号）
+    // 提取底部表格数据（使用位置解析，同时包含右上角编号和材料清单）
     const result = await pdfToText(req.file.buffer, {
       splitPages: true,
       autoDetect: false
@@ -171,7 +172,8 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
       const parsedData = parseTableText(textItems);
       pageTables.push({
         page: i + 1,
-        tableData: parsedData
+        tableData: parsedData.tableData || [],
+        materialsList: parsedData.materialsList || []
       });
     }
 
@@ -182,9 +184,11 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
 
     const worksheet = workbook.addWorksheet('提取结果');
 
-    // 实际图纸表格字段（底部表格 + 项目号）
-    const headers = ['序号', '尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号'];
-    worksheet.columns = headers.map(h => ({ header: h, key: h, width: 15 }));
+    // 表头：底部表格字段 + 材料清单字段
+    const bottomHeaders = ['序号', '尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '项目号'];
+    const materialsHeaders = ['NO', 'NPD公称直径', 'CODE', 'QTY', 'DESCRIPTION备注'];
+    const allHeaders = [...bottomHeaders, ...materialsHeaders];
+    worksheet.columns = allHeaders.map(h => ({ header: h, key: h, width: 15 }));
 
     // 设置表头样式
     worksheet.getRow(1).font = { bold: true };
@@ -194,20 +198,52 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
       fgColor: { argb: 'FFE0E0E0' }
     };
 
-    // 添加数据行
-    pageTables.forEach((pageItem, index) => {
-      const rowData = { 序号: index + 1 };
+    // 全局行号计数器
+    let globalRowNo = 1;
 
-      // 从 tableData 中匹配对应的值（包括右上角编号）
-      if (pageItem.tableData && pageItem.tableData.length > 0) {
-        pageItem.tableData.forEach(item => {
-          if (headers.includes(item.key)) {
-            rowData[item.key] = item.value;
+    // 添加数据行 - 每页的材料清单展开为多行
+    // 目标格式：每页第一行材料清单对应底部表格数据，后续行底部表格字段为空
+    pageTables.forEach((pageItem) => {
+      // 材料清单数据
+      const materialsList = pageItem.materialsList || [];
+
+      if (materialsList.length === 0) {
+        // 如果没有材料清单，只输出一行底部表格数据
+        const rowData = { 序号: globalRowNo };
+        if (pageItem.tableData && pageItem.tableData.length > 0) {
+          pageItem.tableData.forEach(item => {
+            if (bottomHeaders.includes(item.key)) {
+              rowData[item.key] = item.value;
+            }
+          });
+        }
+        worksheet.addRow(rowData);
+        globalRowNo++;
+      } else {
+        // 材料清单展开为多行：第一行填充底部表格数据，后续行底部表格为空
+        materialsList.forEach((material, idx) => {
+          const rowData = { 序号: globalRowNo };
+
+          // 只有第一行材料清单填充底部表格数据
+          if (idx === 0 && pageItem.tableData && pageItem.tableData.length > 0) {
+            pageItem.tableData.forEach(item => {
+              if (bottomHeaders.includes(item.key)) {
+                rowData[item.key] = item.value;
+              }
+            });
           }
+
+          // 材料清单字段（每行都有）
+          materialsHeaders.forEach(h => {
+            if (material[h]) {
+              rowData[h] = material[h];
+            }
+          });
+
+          worksheet.addRow(rowData);
+          globalRowNo++;
         });
       }
-
-      worksheet.addRow(rowData);
     });
 
     // 设置响应头 - 使用原PDF文件名
@@ -220,6 +256,123 @@ app.post('/export/bottom-table-excel', upload.single('pdf'), async (req, res) =>
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 批量底部表格导出 Excel API（多个PDF合并到一个Excel）
+app.post('/export/batch-bottom-table-excel', upload.array('pdfs', 50), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: '请上传 PDF 文件' });
+    }
+
+    console.log(`批量导出：收到 ${req.files.length} 个PDF文件`);
+
+    // 创建 Excel 工作簿
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'PDF to Text Tool';
+    workbook.created = new Date();
+
+    const worksheet = workbook.addWorksheet('提取结果');
+
+    // 表头：底部表格字段 + 材料清单字段
+    const bottomHeaders = ['序号', '尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '项目号'];
+    const materialsHeaders = ['NO', 'NPD公称直径', 'CODE', 'QTY', 'DESCRIPTION备注'];
+    const allHeaders = [...bottomHeaders, ...materialsHeaders];
+    worksheet.columns = allHeaders.map(h => ({ header: h, key: h, width: 15 }));
+
+    // 设置表头样式
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' }
+    };
+
+    // 全局行号计数器
+    let globalRowNo = 1;
+
+    // 处理每个PDF文件
+    for (let fileIdx = 0; fileIdx < req.files.length; fileIdx++) {
+      const pdfFile = req.files[fileIdx];
+      console.log(`处理文件 ${fileIdx + 1}/${req.files.length}: ${pdfFile.originalname}`);
+
+      try {
+        // 提取底部表格数据
+        const result = await pdfToText(pdfFile.buffer, {
+          splitPages: true,
+          autoDetect: false
+        });
+
+        const pageTextItems = result.pageTextItems || [];
+        const pageTables = [];
+
+        for (let i = 0; i < pageTextItems.length; i++) {
+          const textItems = pageTextItems[i];
+          const parsedData = parseTableText(textItems);
+          pageTables.push({
+            page: i + 1,
+            tableData: parsedData.tableData || [],
+            materialsList: parsedData.materialsList || []
+          });
+        }
+
+        // 添加数据行 - 每页的材料清单展开为多行
+        pageTables.forEach((pageItem) => {
+          const materialsList = pageItem.materialsList || [];
+
+          if (materialsList.length === 0) {
+            const rowData = { 序号: globalRowNo };
+            if (pageItem.tableData && pageItem.tableData.length > 0) {
+              pageItem.tableData.forEach(item => {
+                if (bottomHeaders.includes(item.key)) {
+                  rowData[item.key] = item.value;
+                }
+              });
+            }
+            worksheet.addRow(rowData);
+            globalRowNo++;
+          } else {
+            materialsList.forEach((material, idx) => {
+              const rowData = { 序号: globalRowNo };
+
+              if (idx === 0 && pageItem.tableData && pageItem.tableData.length > 0) {
+                pageItem.tableData.forEach(item => {
+                  if (bottomHeaders.includes(item.key)) {
+                    rowData[item.key] = item.value;
+                  }
+                });
+              }
+
+              materialsHeaders.forEach(h => {
+                if (material[h]) {
+                  rowData[h] = material[h];
+                }
+              });
+
+              worksheet.addRow(rowData);
+              globalRowNo++;
+            });
+          }
+        });
+      } catch (err) {
+        console.error(`处理文件 ${pdfFile.originalname} 失败:`, err.message);
+      }
+    }
+
+    console.log(`批量导出完成，共 ${globalRowNo - 1} 行数据`);
+
+    // 设置响应头
+    const excelFileName = `excel_merged_${req.files.length}_files.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(excelFileName)}"`);
+
+    // 写入响应
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('批量导出失败:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -406,12 +559,15 @@ app.post('/export/multi-excel', upload.single('pdf'), async (req, res) => {
       });
     }
 
-    // 2. 使用OCR提取右上角区域（与区域提取API一致）
+    // 2. 使用OCR提取右上角区域
     const lang = req.query.lang || 'chi_sim+eng';
     const rightTopResult = await pdfRegionToText(req.file.buffer, {
       position: 'top-right'
     }, { lang });
     const rightTopTexts = rightTopResult.pageResults || [];
+
+    // 解析右上角文本为结构化字段
+    const rightTopFields = rightTopTexts.map(item => parseRightTopText(item.text));
 
     // 创建 Excel 工作簿
     const workbook = new ExcelJS.Workbook();
@@ -420,9 +576,11 @@ app.post('/export/multi-excel', upload.single('pdf'), async (req, res) => {
 
     const worksheet = workbook.addWorksheet('提取结果');
 
-    // 表头：底部表格字段 + 项目号 + 右上角区域内容
-    const headers = ['序号', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆', '比例', '图号', '项目号', '右上角区域'];
-    worksheet.columns = headers.map(h => ({ header: h, key: h, width: 15 }));
+    // 表头：底部表格字段 + 右上角拆分字段
+    const bottomHeaders = ['序号', '尺寸', '管线号', '材料等级', '管道级别', '设计温度', '操作温度', '设计压力', '操作压力', '保温类型', '保温厚度', '刷漆'];
+    const rightTopHeaders = ['项目号', '万华图号', '版次', '设计阶段', '第几张', '共几张', '比例', '图号'];
+    const allHeaders = [...bottomHeaders, ...rightTopHeaders];
+    worksheet.columns = allHeaders.map(h => ({ header: h, key: h, width: 15 }));
 
     // 设置表头样式
     worksheet.getRow(1).font = { bold: true };
@@ -432,22 +590,24 @@ app.post('/export/multi-excel', upload.single('pdf'), async (req, res) => {
       fgColor: { argb: 'FFE0E0E0' }
     };
 
-    // 添加数据行
+    // 添加数据行 - 每个PDF页面作为一行，底部表格和右上角字段分开填充
     pageTables.forEach((pageItem, index) => {
       const rowData = { 序号: index + 1 };
 
-      // 底部表格数据 + 项目号
+      // 底部表格数据
       if (pageItem.tableData && pageItem.tableData.length > 0) {
         pageItem.tableData.forEach(item => {
-          if (headers.includes(item.key)) {
+          if (bottomHeaders.includes(item.key)) {
             rowData[item.key] = item.value;
           }
         });
       }
 
-      // 右上角区域OCR内容（对应页面）
-      if (rightTopTexts[index] && rightTopTexts[index].text) {
-        rowData['右上角区域'] = rightTopTexts[index].text.trim();
+      // 右上角拆分字段
+      if (rightTopFields[index]) {
+        rightTopHeaders.forEach(field => {
+          rowData[field] = rightTopFields[index][field] || '';
+        });
       }
 
       worksheet.addRow(rowData);
@@ -466,6 +626,78 @@ app.post('/export/multi-excel', upload.single('pdf'), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * 解析右上角文本为结构化字段
+ * 提取项目号、万华图号、版次、设计阶段、页码、比例、图号等
+ */
+function parseRightTopText(text) {
+  if (!text) return {};
+
+  const result = {
+    '项目号': '',
+    '万华图号': '',
+    '版次': '',
+    '设计阶段': '',
+    '第几张': '',
+    '共几张': '',
+    '比例': '',
+    '图号': ''
+  };
+
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+
+  for (const line of lines) {
+    // 项目号：格式如 "21212-DD"
+    if (line.match(/^[A-Z0-9]+-[A-Z]+$/)) {
+      result['项目号'] = line;
+      continue;
+    }
+
+    // 万华图号：格式如 "PD-DW07-N/A 80609" 或类似
+    if (line.includes('PD-DW') || line.match(/PD-[A-Z0-9]+/)) {
+      result['万华图号'] = line;
+      continue;
+    }
+
+    // 版次：格式如 "A" 或数字
+    if (line.match(/^[A-Z0-9]$/) && line.length === 1) {
+      result['版次'] = line;
+      continue;
+    }
+
+    // 设计阶段
+    if (line.includes('详细工程设计') || line.includes('设计')) {
+      result['设计阶段'] = line;
+      continue;
+    }
+
+    // 页码格式："第 X 张 共 Y 张" 或 "SHT OF" 格式
+    const pageMatch = line.match(/第\s*(\d+)\s*张\s*共\s*(\d+)\s*张/) || line.match(/(\d+)\s*OF\s*(\d+)/);
+    if (pageMatch) {
+      result['第几张'] = pageMatch[1];
+      result['共几张'] = pageMatch[2];
+      continue;
+    }
+
+    // 比例格式："比例 N/A" 或 "SCALE"
+    if (line.includes('比例') || line.includes('SCALE')) {
+      const scaleMatch = line.match(/比例\s*([^\s]+)/) || line.match(/SCALE\s*([^\s]+)/);
+      if (scaleMatch) {
+        result['比例'] = scaleMatch[1];
+      }
+      continue;
+    }
+
+    // 图号：格式如 "WHYTP57-F-70BS47001-2647-2022"
+    if (line.match(/^WHYTP[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+$/)) {
+      result['图号'] = line;
+      continue;
+    }
+  }
+
+  return result;
+}
 
 /**
  * 解析键值对文本

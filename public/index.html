@@ -464,9 +464,9 @@
       <!-- 上传区域 -->
       <div class="upload-area" id="uploadArea">
         <div class="upload-icon">📄</div>
-        <div class="upload-text">点击或拖拽 PDF 文件到这里上传</div>
+        <div class="upload-text">点击或拖拽 PDF 文件到这里上传（支持多文件）</div>
         <div class="file-name" id="fileName"></div>
-        <input type="file" class="file-input" id="fileInput" accept=".pdf" />
+        <input type="file" class="file-input" id="fileInput" accept=".pdf" multiple />
       </div>
 
       <!-- 全文转换模式 -->
@@ -737,7 +737,7 @@
       const bottomTablePanel = document.getElementById("bottomTablePanel");
 
       let currentMode = "multi";
-      let selectedFile = null;
+      let selectedFiles = []; // 改为数组，支持多文件
       let regionCount = 2;
 
       // 模式切换事件
@@ -767,8 +767,12 @@
 
       fileInput.addEventListener("change", (e) => {
         if (e.target.files.length > 0) {
-          selectedFile = e.target.files[0];
-          fileName.textContent = `已选择: ${selectedFile.name}`;
+          selectedFiles = Array.from(e.target.files);
+          if (selectedFiles.length === 1) {
+            fileName.textContent = `已选择: ${selectedFiles[0].name}`;
+          } else {
+            fileName.textContent = `已选择 ${selectedFiles.length} 个文件: ${selectedFiles.map(f => f.name).join(', ')}`;
+          }
           convertBtn.disabled = false;
         }
       });
@@ -785,10 +789,14 @@
       uploadArea.addEventListener("drop", (e) => {
         e.preventDefault();
         uploadArea.classList.remove("dragover");
-        const files = e.dataTransfer.files;
-        if (files.length > 0 && files[0].type === "application/pdf") {
-          selectedFile = files[0];
-          fileName.textContent = `已选择: ${selectedFile.name}`;
+        const files = Array.from(e.dataTransfer.files).filter(f => f.type === "application/pdf");
+        if (files.length > 0) {
+          selectedFiles = files;
+          if (selectedFiles.length === 1) {
+            fileName.textContent = `已选择: ${selectedFiles[0].name}`;
+          } else {
+            fileName.textContent = `已选择 ${selectedFiles.length} 个文件`;
+          }
           convertBtn.disabled = false;
         } else {
           showError("请上传 PDF 文件");
@@ -797,7 +805,7 @@
 
       // 转换按钮
       convertBtn.addEventListener("click", async () => {
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
 
         loading.style.display = "block";
         error.style.display = "none";
@@ -827,7 +835,7 @@
         loadingText.textContent = "正在转换...";
 
         const formData = new FormData();
-        formData.append("pdf", selectedFile);
+        formData.append("pdf", selectedFiles[0]);
 
         const params = new URLSearchParams();
         if (splitPages.checked) params.append("splitPages", "true");
@@ -854,7 +862,7 @@
         loadingText.textContent = "正在提取指定区域...";
 
         const formData = new FormData();
-        formData.append("pdf", selectedFile);
+        formData.append("pdf", selectedFiles[0]);
 
         const params = new URLSearchParams();
         params.append("position", position.value);
@@ -895,7 +903,7 @@
         const multiLang = document.getElementById("multiLang").value;
 
         const formData = new FormData();
-        formData.append("pdf", selectedFile);
+        formData.append("pdf", selectedFiles[0]);
         formData.append("regions", JSON.stringify(regions));
 
         const params = new URLSearchParams();
@@ -923,7 +931,7 @@
         loadingText.textContent = "正在提取底部表格...";
 
         const formData = new FormData();
-        formData.append("pdf", selectedFile);
+        formData.append("pdf", selectedFiles[0]);
 
         const tableLang = document.getElementById("tableLang").value;
         const params = new URLSearchParams();
@@ -1158,32 +1166,41 @@
 
       // 导出 Excel
       exportBtn.addEventListener("click", async () => {
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
 
         exportBtn.disabled = true;
-        exportBtn.textContent = "导出中...";
+        exportBtn.textContent = selectedFiles.length > 1 ? "批量导出中..." : "导出中...";
 
         try {
-          const formData = new FormData();
-          formData.append("pdf", selectedFile);
-
           let response;
 
-          if (currentMode === "multi") {
-            // 多区域导出
-            const regions = getMultiRegionConfig();
-            const multiLang = document.getElementById("multiLang").value;
-            formData.append("regions", JSON.stringify(regions));
+          if (currentMode === "bottom-table" && selectedFiles.length > 1) {
+            // 多文件底部表格批量导出（合并到一个Excel）
+            loadingText.textContent = `正在处理 ${selectedFiles.length} 个文件...`;
+            loading.style.display = "block";
 
-            const params = new URLSearchParams();
-            params.append("lang", multiLang);
-
-            response = await fetch(`/export/multi-excel?${params.toString()}`, {
-              method: "POST",
-              body: formData,
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+              formData.append("pdfs", file);
             });
+
+            const tableLang = document.getElementById("tableLang").value;
+            const params = new URLSearchParams();
+            params.append("lang", tableLang);
+
+            response = await fetch(
+              `/export/batch-bottom-table-excel?${params.toString()}`,
+              {
+                method: "POST",
+                body: formData,
+              },
+            );
+            loading.style.display = "none";
           } else if (currentMode === "bottom-table") {
-            // 底部表格导出（目标格式）
+            // 单文件底部表格导出
+            const formData = new FormData();
+            formData.append("pdf", selectedFiles[0]);
+
             const tableLang = document.getElementById("tableLang").value;
             const params = new URLSearchParams();
             params.append("lang", tableLang);
@@ -1195,8 +1212,25 @@
                 body: formData,
               },
             );
+          } else if (currentMode === "multi") {
+            // 多区域导出
+            const formData = new FormData();
+            formData.append("pdf", selectedFiles[0]);
+            const regions = getMultiRegionConfig();
+            const multiLang = document.getElementById("multiLang").value;
+            formData.append("regions", JSON.stringify(regions));
+
+            const params = new URLSearchParams();
+            params.append("lang", multiLang);
+
+            response = await fetch(`/export/multi-excel?${params.toString()}`, {
+              method: "POST",
+              body: formData,
+            });
           } else {
             // 单区域或全文导出
+            const formData = new FormData();
+            formData.append("pdf", selectedFiles[0]);
             const params = new URLSearchParams();
             params.append("mode", currentMode);
 
@@ -1228,14 +1262,18 @@
             throw new Error("导出失败");
           }
 
-          // 下载文件 - 使用原PDF文件名
+          // 下载文件
           const blob = await response.blob();
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          // 从原始PDF文件名生成Excel文件名
-          const pdfName = selectedFile.name.replace('.pdf', '');
-          a.download = `excel_${pdfName}.xlsx`;
+          // 文件名
+          if (selectedFiles.length > 1) {
+            a.download = `excel_merged_${selectedFiles.length}_files.xlsx`;
+          } else {
+            const pdfName = selectedFiles[0].name.replace('.pdf', '');
+            a.download = `excel_${pdfName}.xlsx`;
+          }
           document.body.appendChild(a);
           a.click();
           window.URL.revokeObjectURL(url);
